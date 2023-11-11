@@ -1,12 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"github.com/djherbis/times"
 	"github.com/writeas/go-writeas/v2"
 	"log/slog"
-	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"regexp"
@@ -126,13 +123,25 @@ func (p *PostSynchronizer) UploadLocalImages() (map[string]string, error) {
 }
 
 func (p *PostSynchronizer) LoadRemotePosts() ([]writeas.Post, error) {
-	posts, err := ReqWithRetries[*[]writeas.Post](func() (*[]writeas.Post, error) {
-		return p.client.GetCollectionPosts(p.collAlias)
-	})
-	if err != nil {
-		return nil, err
+	var res []writeas.Post
+
+	page := uint64(1)
+	for {
+		slog.Default().Info("Fetching a page", slog.Uint64("page", page))
+		posts, err := ReqWithRetries[*[]writeas.Post](func() (*[]writeas.Post, error) {
+			return GetCollectionPostsPaginated(p.client, p.collAlias, page)
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(*posts) == 0 {
+			break
+		}
+
+		res = append(res, *posts...)
+		page++
 	}
-	return *posts, err
+	return res, nil
 }
 
 func (p *PostSynchronizer) UpdateOrCreateLocalPosts(remotePosts []writeas.Post) error {
@@ -299,35 +308,6 @@ func (p *PostSynchronizer) uploadLocalPostToServer(local LocalPost, remote *writ
 		//if err != nil {
 		//	return err
 		//}
-	}
-
-	return nil
-}
-
-func (p *PostSynchronizer) setPostCtime(newPost writeas.Post, title string, ctime time.Time) error {
-	data := make(url.Values)
-	data["slug"] = []string{newPost.Slug}
-	data["title"] = []string{title}
-	data["created"] = []string{ctime.Format("2006-01-02+15:04:05")}
-
-	// The JSON API appears to be broken, it can't be used to set the post's mtime or ctime. So emulate the UI access.
-	metaDataEditUrl := p.client.BaseURL() + "/collections/" + p.collAlias + "/posts/" + newPost.ID
-
-	req, err := http.NewRequest("POST", metaDataEditUrl, strings.NewReader(data.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", "Token "+p.client.Token())
-
-	response, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = response.Body.Close() }()
-
-	if response.StatusCode != http.StatusFound && response.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to update the ctime for %s, status=%s", newPost.Slug, response.Status)
 	}
 
 	return nil
