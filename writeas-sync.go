@@ -150,8 +150,8 @@ func main() {
 		}
 	})
 
-	rootCmd.PersistentFlags().StringVarP(&setts.ImageHostingType, "image-hosting-type", "t", "",
-		"Image hosting type: snapas (default), webdav")
+	rootCmd.PersistentFlags().StringVarP(&setts.ImageHostingType, "image-hosting-type", "t",
+		"snapas", "Image hosting type: snapas (default), webdav")
 
 	rootCmd.PersistentFlags().StringVarP(&setts.ImageLogin, "image-login", "i", "",
 		"Image hosting login, the same as WriteAs login if not specified")
