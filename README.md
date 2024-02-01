@@ -91,7 +91,8 @@ It is immutable, as all content URLs must forever be. So make sure to get it rig
 The first first-level caption of the post is used as the post title.
 
 For example, you can create a simple post that references an image (of course, the image `minerals/obsidian.jpg` 
-needs to be present):
+needs to be present). You also can add tags to your posts, by adding a `#tags` at the last line of the post, 
+multiple tags need to be separated by spaces.
 
 ```markdown
 # This is an upload test
@@ -99,6 +100,8 @@ needs to be present):
 I like minerals. Here's Obsidian:
 
 ![Obsidian](minerals/obsidian.jpg)
+
+#obsidian #minerals
 ```
 
 Save the post as `2023-11-02-frist-post.md` and run the upload command:
@@ -136,7 +139,9 @@ locally and remotely. Otherwise, it'll keep getting 'resurrected' with each sync
 
 # Notes on working with images
 
-`writeas-sync` supports simple image management. When you write a post locally, you can reference images in 
+## Snap.As integration
+
+`writeas-sync` supports simple image management via Snap.As. When you write a post locally, you can reference images in 
 subdirectories of your post directory. For example, if you have a post `2023-11-02-frist-post.md`, you can reference
 an image `minerals/obsidian.jpg` in it.
 
@@ -146,16 +151,36 @@ a link to the uploaded image. The source directory will be preserved in the `fil
 If you edit or create a post on Write.As, they will lack the `filename` property, so `writeas-sync` will download
 them into the subdirectory named after the post slug (essentially, the filename without the `.md` suffix).
 
+## WebDAV integration
+
+Alternatively, you can use WebDAV to manage your images. In this case, you need to set `--image-hosting-type` flag
+to `webdav`, and also specify the WebDAV endpoint and credentials if they are different from your Write.As credentials.
+
+You also need to specify the WebDAV server URL via the `--webdav-endpoint` flag, and the publicly accessible URL that
+corresponds to that endpoint.
+
+For example, you might use a WebDAV server available at `https://mydav.example.com:5060/myimages`, and expose that 
+directory via `https://myimages.example.com`. In this case, you'd need to specify that public endpoint via the 
+`--webdav-published-url` flag.
+
+Here's an example of the command line:
+
+```shell
+writeas-sync sync --image-hosting-type webdav --image-login imageupload --image-password 123 \
+  --webdav-endpoint https://mydav.example.com:5060/myimages --webdav-published-url https://myimages.example.com \
+  --alias <your_alias> --login <your_login> --root ~/blog
+```
+
+Alternatively, you can use `WRITEAS_WEBDAV_URL` and `WRITEAS_WEBDAV_PUBLISHED_URL` environment variables to specify
+the WebDAV endpoint and the published URL.
+
 # Limitations and TODOs
 
 1. The blog structure is very simple: it's just a list of posts, prefixed with a timestamp.  
 2. The blog is stored in a single directory. If you have multiple blogs, you'll need to run multiple instances of the
    synchronizer.
 3. Snap.As processes the images, seriously degrading their quality.
-4. The WriteAs API doesn't support pagination, so if you have a large blog, synchronization is going to take 
-   a lot of time. And it'll probably break at some point.
-5. SnapAs integration doesn't support mutating images. So if you want to edit a local image, you need to change 
-   its filename. 
-6. TODO: add support for tags.
-7. TODO: add support for collections in Snap.As.
-8. TODO: add GC support for unreferenced images in Snap.As.
+4. SnapAs integration doesn't support mutating images. So if you want to edit a local image, you need to change 
+   its filename.
+5. TODO: add support for collections in Snap.As.
+6. TODO: add GC support for unreferenced images in Snap.As.

@@ -2,10 +2,6 @@ package main
 
 import (
 	"fmt"
-	"github.com/gomarkdown/markdown"
-	"github.com/gomarkdown/markdown/ast"
-	"github.com/gomarkdown/markdown/md"
-	"github.com/gomarkdown/markdown/parser"
 	"github.com/snapas/go-snapas"
 	"io"
 	"log/slog"
@@ -25,15 +21,17 @@ const DirectorySeparatorReplacement = "¦"
 // ObsidianSyncPrefix prefix for escaped paths ("not sign" from Latin-1 Supplement)
 const ObsidianSyncPrefix = "¬"
 
-type ImageConverter struct {
+type SnapasSync struct {
 	rootDir                string
 	client                 *snapas.Client
 	imageMapByUrl          map[string]snapas.Photo
 	imageMapByFilenameName map[string]snapas.Photo
 }
 
-func NewImageConverter(client *snapas.Client, rootDir string) *ImageConverter {
-	return &ImageConverter{
+var _ ImageSyncer = &SnapasSync{}
+
+func NewSnapasSync(client *snapas.Client, rootDir string) *SnapasSync {
+	return &SnapasSync{
 		client:                 client,
 		rootDir:                rootDir,
 		imageMapByUrl:          make(map[string]snapas.Photo),
@@ -41,12 +39,7 @@ func NewImageConverter(client *snapas.Client, rootDir string) *ImageConverter {
 	}
 }
 
-func IsImageFile(fileName string) bool {
-	ext := strings.ToLower(filepath.Ext(fileName))
-	return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" || ext == ".svg"
-}
-
-func (c *ImageConverter) BuildImageMap() error {
+func (c *SnapasSync) BuildImageMap() error {
 	var photos []snapas.Photo
 	_, err := c.client.Get("/me/photos", &photos)
 	if err != nil {
@@ -71,7 +64,7 @@ func (c *ImageConverter) BuildImageMap() error {
 	return nil
 }
 
-func (c *ImageConverter) EnsureLocalImageIsUploaded(img LocalImage) (string, error) {
+func (c *SnapasSync) EnsureLocalImageIsUploaded(img LocalImage) (string, error) {
 	// Check if the image is already present first by the filename
 	escapedName := ObsidianSyncPrefix + strings.ReplaceAll(img.relPath, "/", DirectorySeparatorReplacement)
 	cur, ok := c.imageMapByFilenameName[escapedName]
@@ -83,12 +76,12 @@ func (c *ImageConverter) EnsureLocalImageIsUploaded(img LocalImage) (string, err
 		//	return cur.URL, nil
 		//}
 		//return "", fmt.Errorf("file sizes differ for file %s, URL=%s, delete the file on the server to re-upload",
-		//	img.fname, cur.URL)
+		//	img.fullPath, cur.URL)
 	}
 
 	// But the file could have been downloaded without a meaningful filename, so try to
 	// use the filename as the URL
-	cur, ok = c.imageMapByUrl[SnapAsUrlPrefix+path.Base(img.fname)]
+	cur, ok = c.imageMapByUrl[SnapAsUrlPrefix+path.Base(img.fullPath)]
 	if ok {
 		return cur.URL, nil
 		//TODO: size comparison doesn't work because snap.as does image reprocessing.
@@ -97,12 +90,12 @@ func (c *ImageConverter) EnsureLocalImageIsUploaded(img LocalImage) (string, err
 		//	return cur.URL, nil
 		//}
 		//return "", fmt.Errorf("file sizes differ for file %s, URL=%s, delete the file on the server to re-upload",
-		//	img.fname, cur.URL)
+		//	img.fullPath, cur.URL)
 	}
 
 	// Nope, image was not found so upload it
 	slog.Default().Warn("Uploading a new image", slog.String("file", img.relPath))
-	photo, err := UploadPhoto(c.client, img.fname, escapedName)
+	photo, err := UploadPhoto(c.client, img.fullPath, escapedName)
 	if err != nil {
 		return "", err
 	}
@@ -128,147 +121,18 @@ func IsSubPath(parent, sub string) (bool, error) {
 	return false, nil
 }
 
-func (c *ImageConverter) GatherPostImagesAndTitle(input []byte) ([]LocalImage, string, error) {
-	extensions := parser.CommonExtensions
-	mdParser := parser.NewWithExtensions(extensions)
-	doc := mdParser.Parse(input)
-
-	// Collect the local images
-	var images []LocalImage
-	var err error
-	var title string
-	ast.WalkFunc(doc, func(node ast.Node, entering bool) ast.WalkStatus {
-		// Extract the document title (the first first-level header)
-		if head, ok := node.(*ast.Heading); ok && entering && title == "" {
-			mdr := md.NewRenderer()
-			title = string(markdown.Render(head, mdr))
-			title = strings.TrimSpace(strings.TrimPrefix(title, "#"))
-		}
-		if img, ok := node.(*ast.Image); ok && entering {
-			// Check if image is relative to the post
-			rawDst := string(img.Destination)
-
-			// Skip non-image file
-			if !IsImageFile(rawDst) {
-				return ast.GoToNext
-			}
-
-			// Skip absolute URLs (with the schema)
-			var imgUrl *url.URL
-			imgUrl, err = url.Parse(rawDst)
-			if imgUrl.IsAbs() {
-				return ast.GoToNext
-			}
-			dst := path.Clean(rawDst)
-
-			var imgPath string
-			imgPath, err = c.sanitizePath(dst, true)
-			if err != nil {
-				return ast.Terminate
-			}
-			if imgPath == "" {
-				return ast.GoToNext
-			}
-
-			if !path.IsAbs(imgPath) {
-				imgPath = path.Join(c.rootDir, imgPath)
-			}
-
-			st, statErr := os.Stat(imgPath)
-			if statErr == nil {
-				// Path exists!
-				images = append(images, LocalImage{
-					fname:   imgPath,
-					relPath: rawDst,
-					size:    st.Size(),
-				})
-			}
-		}
-		return ast.GoToNext
-	})
-	if err != nil {
-		return nil, "", err
-	}
-
-	return images, title, nil
-}
-
-// Sanitize the references to files, to make sure that they don't point out of the post tree
-func (c *ImageConverter) sanitizePath(filePath string, absOk bool) (string, error) {
-	// TODO: DANGER, RADIOACTIVE, BAD.
-	// This code might conceivably be used to read files outside of the current directory.
-	// I _hope_ I sanitized the inputs well enough.
-	if filePath == "" {
-		return "", fmt.Errorf("empty path")
-	}
-	if path.IsAbs(filePath) {
-		if absOk {
-			return "", nil // Failed to sanitize the path, but it's OK
-		}
-		return "", fmt.Errorf("absolute path, look out for malicious input")
-	}
-	curPath := filePath
-	for {
-		dir, file := path.Split(curPath)
-		if file == "." || file == ".." {
-			return "", fmt.Errorf("path contains '..' or '.', look out for malicious input")
-		}
-		if dir == "" {
-			break
-		}
-		curPath = file
-	}
-
-	return filePath, nil
-}
-
-func (c *ImageConverter) DownloadPostImages(postContent string,
-	datePart, slug string) (map[string]string, error) {
-
-	extensions := parser.CommonExtensions
-	mdParser := parser.NewWithExtensions(extensions)
-	doc := mdParser.Parse([]byte(postContent))
-
-	// Download
-	var err error
-	linkFixMap := make(map[string]string)
-	ast.WalkFunc(doc, func(node ast.Node, entering bool) ast.WalkStatus {
-		if img, ok := node.(*ast.Image); ok && entering {
-			// Skip non-image file
-			if !IsImageFile(string(img.Destination)) {
-				return ast.GoToNext
-			}
-
-			var newDest string
-			newDest, err = c.ensureImageIsDownloaded(string(img.Destination), datePart, slug)
-			if err != nil {
-				return ast.Terminate
-			}
-			if newDest != "" {
-				linkFixMap[string(img.Destination)] = newDest
-			}
-		}
-		return ast.GoToNext
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return linkFixMap, nil
-}
-
-func (c *ImageConverter) ensureImageIsDownloaded(rawDst string, datePart string, slug string) (string, error) {
+func (c *SnapasSync) DownloadAndSaveImage(fullImageUrl string, datePart string, slug string) (string, error) {
 	// Check if image is relative to the post
-	if !strings.HasPrefix(rawDst, SnapAsUrlPrefix) {
+	if !strings.HasPrefix(fullImageUrl, SnapAsUrlPrefix) {
 		return "", nil
 	}
 
-	imgUrl, err := url.Parse(rawDst)
+	imgUrl, err := url.Parse(fullImageUrl)
 	if err != nil {
 		return "", err
 	}
 
-	existing, ok := c.imageMapByUrl[rawDst]
+	existing, ok := c.imageMapByUrl[fullImageUrl]
 	// For images from other SnapAs accounts or for images that don't have an encoded path, we just
 	// download them into the default location.
 	if !ok || !strings.HasPrefix(existing.Filename, ObsidianSyncPrefix) {
@@ -283,7 +147,7 @@ func (c *ImageConverter) ensureImageIsDownloaded(rawDst string, datePart string,
 		slog.Default().Info("Downloading image",
 			slog.String("url", existing.URL), slog.String("dest", relPath))
 
-		err = c.DownloadImage(path.Join(c.rootDir, fileDir, imgName), rawDst)
+		err = c.doDownloadImage(path.Join(c.rootDir, fileDir, imgName), fullImageUrl)
 		return relPath, err
 	}
 
@@ -291,7 +155,7 @@ func (c *ImageConverter) ensureImageIsDownloaded(rawDst string, datePart string,
 	imgPath := strings.ReplaceAll(strings.TrimPrefix(existing.Filename, ObsidianSyncPrefix),
 		DirectorySeparatorReplacement, "/")
 
-	sanitizedRelPath, err := c.sanitizePath(imgPath, false)
+	sanitizedRelPath, err := EnsurePathIsRelativeToItsLocation(imgPath, false)
 	if err != nil || sanitizedRelPath == "" {
 		return "", fmt.Errorf("failed to sanitize the path: %w", err)
 	}
@@ -319,7 +183,7 @@ func (c *ImageConverter) ensureImageIsDownloaded(rawDst string, datePart string,
 	slog.Default().Info("Downloading image",
 		slog.String("url", existing.URL), slog.String("dest", sanitizedAbsPath))
 
-	err = c.DownloadImage(sanitizedAbsPath, existing.URL)
+	err = c.doDownloadImage(sanitizedAbsPath, existing.URL)
 	if err != nil {
 		return "", err
 	}
@@ -327,7 +191,7 @@ func (c *ImageConverter) ensureImageIsDownloaded(rawDst string, datePart string,
 	return sanitizedRelPath, nil
 }
 
-func (c *ImageConverter) DownloadImage(dstFile string, url string) error {
+func (c *SnapasSync) doDownloadImage(dstFile string, url string) error {
 	_, err := os.Stat(dstFile)
 	if err == nil {
 		// File already exists, nothing to do

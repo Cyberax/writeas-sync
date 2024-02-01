@@ -17,9 +17,10 @@ const AllowedFileTimestampSkew = 2 * time.Second
 var ObsiSyncFilePattern = regexp.MustCompile(`\d\d\d\d-\d\d-\d\d-.*\.md`)
 
 type LocalImage struct {
-	fname   string
-	relPath string
-	size    int64
+	fullPath string
+	relPath  string
+	size     int64
+	mtime    time.Time
 }
 
 type LocalPost struct {
@@ -32,22 +33,22 @@ type LocalPost struct {
 }
 
 type PostSynchronizer struct {
-	conv      *ImageConverter
-	client    *writeas.Client
-	rootDir   string
-	collAlias string
+	imageSyncer ImageSyncer
+	client      *writeas.Client
+	rootDir     string
+	collAlias   string
 
 	posts map[string]LocalPost
 }
 
-func NewPostSynchronizer(conv *ImageConverter, client *writeas.Client, rootDir, collAlias string) *PostSynchronizer {
+func NewPostSynchronizer(imageSyncer ImageSyncer, client *writeas.Client, rootDir, collAlias string) *PostSynchronizer {
 
 	return &PostSynchronizer{
-		conv:      conv,
-		client:    client,
-		rootDir:   rootDir,
-		collAlias: collAlias,
-		posts:     make(map[string]LocalPost),
+		imageSyncer: imageSyncer,
+		client:      client,
+		rootDir:     rootDir,
+		collAlias:   collAlias,
+		posts:       make(map[string]LocalPost),
 	}
 }
 
@@ -80,7 +81,7 @@ func (p *PostSynchronizer) FindFiles() error {
 			return err
 		}
 
-		images, title, err := p.conv.GatherPostImagesAndTitle(content)
+		images, title, err := GatherPostImagesAndTitle(p.rootDir, content)
 		if err != nil {
 			return err
 		}
@@ -111,7 +112,7 @@ func (p *PostSynchronizer) UploadLocalImages() (map[string]string, error) {
 
 	for _, curPost := range p.posts {
 		for _, i := range curPost.images {
-			imgUrl, err := p.conv.EnsureLocalImageIsUploaded(i)
+			imgUrl, err := p.imageSyncer.EnsureLocalImageIsUploaded(i)
 			if err != nil {
 				return nil, err
 			}
@@ -187,7 +188,7 @@ func (p *PostSynchronizer) createOrUpdateLocalFile(post writeas.Post, local *Loc
 	}
 	defer func() { _ = file.Close() }()
 
-	linkFixMap, err := p.conv.DownloadPostImages(post.Content, datePart, post.Slug)
+	linkFixMap, err := ParsePostAndDownloadReferencedImages(p.imageSyncer, post.Content, datePart, post.Slug)
 	if err != nil {
 		return err
 	}
